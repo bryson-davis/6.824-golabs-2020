@@ -1,6 +1,11 @@
 package mr
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"os"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
@@ -108,11 +113,56 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	return false
 }
 
+//默认map保存到一个地方，而reduce从同一个地方读取（//实际场景这是不可能的，需要将map的保存路径发送给master）
+
+//定义临时文件名
+func genIntermediateFile(mapIndex int, reduceIndex int) string {
+	return fmt.Sprintf("mr-%d-%d", mapIndex, reduceIndex)
+}
+
+type Bucket []KeyValue
+
 //定义Map与Reduce的通用方法
-func Map(fileName string, mapIndex int, reduceNumber, mapf func(string, string)[]KeyValue) {
+func Map(fileName string, mapIndex int, reduceNumber int, mapf func(string, string)[]KeyValue) {
+	//from mrsequential.go
+	buckets := make([]Bucket, reduceNumber)
+
+	file,err := os.Open(fileName)
+	if err != nil {
+		log.Fatalf("cannot open %v", fileName)
+	}
+	content, err := ioutil.ReadAll(file)
+	file.Close()
+	//执行map计算
+	kva := mapf(fileName, string(content))
+	//将结果进行分桶放置，每个桶对应一个reduce的读取位置
+	for _, item := range kva {
+		index := ihash(item.Key) % reduceNumber
+		buckets[index] = append(buckets[index], item)
+	}
+	for reduceIndex, bucket := range buckets {
+		//将内容写到临时文件
+		file, err := ioutil.TempFile("./tmp", "map-temp")
+		if err != nil {
+			log.Fatalf("create temp file failed %v", err)
+		}
+		enc := json.NewEncoder(file)
+		for _, kv := range bucket {
+			err := enc.Encode(&kv)
+			if err != nil {
+				log.Fatalf("json encode file err %v", err)
+			}
+		}
+		//获取文件名保存
+		filename := genIntermediateFile(mapIndex, reduceIndex)
+		err = os.Rename(file.Name(), filename)
+		if err != nil {
+			log.Fatalf("rename faile, %v", err)
+		}
+	}
 
 }
 
 func Reduce(mapNumber int, reduceIndex int, reducef func(string, string) []KeyValue) {
-	
+
 }
