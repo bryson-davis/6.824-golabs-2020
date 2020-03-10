@@ -12,7 +12,29 @@ type Master struct {
 
 }
 
-// Your code here -- RPC handlers for the worker to call.
+
+func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error {
+
+	//判断该worker有没有上次执行的complete task，并执行
+	m.finishTask(args.CompleteTask)
+
+	//进行任务分配
+	for {
+		task := m.scheduleTask()
+		reply.Done = false
+		reply.Task = *task
+	}
+
+	return nil
+}
+
+func (m *Master) scheduleTask() *Task {
+	return nil
+}
+
+func (m *Master) finishTask(task Task) {
+
+}
 
 //
 // an example RPC handler.

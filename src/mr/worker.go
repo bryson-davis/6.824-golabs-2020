@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sort"
 )
 import "log"
 import "net/rpc"
@@ -116,9 +117,21 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 //默认map保存到一个地方，而reduce从同一个地方读取（//实际场景这是不可能的，需要将map的保存路径发送给master）
 
 //定义临时文件名
-func genIntermediateFile(mapIndex int, reduceIndex int) string {
+func genIntermediateFileName(mapIndex int, reduceIndex int) string {
 	return fmt.Sprintf("mr-%d-%d", mapIndex, reduceIndex)
 }
+
+func genOutFileName(reduceIndex int) string {
+	return fmt.Sprintf("mr-out-%d", reduceIndex)
+}
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 type Bucket []KeyValue
 
@@ -154,7 +167,7 @@ func Map(fileName string, mapIndex int, reduceNumber int, mapf func(string, stri
 			}
 		}
 		//获取文件名保存
-		filename := genIntermediateFile(mapIndex, reduceIndex)
+		filename := genIntermediateFileName(mapIndex, reduceIndex)
 		err = os.Rename(file.Name(), filename)
 		if err != nil {
 			log.Fatalf("rename faile, %v", err)
@@ -163,6 +176,50 @@ func Map(fileName string, mapIndex int, reduceNumber int, mapf func(string, stri
 
 }
 
-func Reduce(mapNumber int, reduceIndex int, reducef func(string, string) []KeyValue) {
+//根据reduceIndex，读取该 reduce task所有相关的临时文件，然后执行reduce任务，保存到genoutfile()文件
+func Reduce(mapNumber int, reduceIndex int, reducef func(string, []string) string) {
+	//读取全部的临时文件内容
+	intermediate := make([]KeyValue, 0)
+	for i := 0; i < mapNumber; i++ {
+		fileName := "./tmp/" + genIntermediateFileName(i, reduceIndex)
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("cannot open %v", fileName)
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+		file.Close()
+	}
+	//进行排序
+	sort.Sort(ByKey(intermediate))
+	outfileName := genOutFileName(reduceIndex)
+	f, _ := ioutil.TempFile("./tmp", "reduce_temp")
+	//进行统计
+	i := 0
+	for i < len(intermediate) {
+		//生成 ( key, list() ) 列表
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; i < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		//处理每个键值
+		output := reducef(intermediate[i].Key, values)
 
+		//reduce output
+		fmt.Fprintf(f, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+	f.Close()
+	os.Rename(f.Name(), outfileName)
 }
