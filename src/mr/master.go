@@ -1,6 +1,10 @@
 package mr
 
-import "log"
+import (
+	"log"
+	"sync"
+	"time"
+)
 import "net"
 import "os"
 import "net/rpc"
@@ -9,38 +13,56 @@ import "net/http"
 
 const (
 	SCHEDULE_TASK_SUCCESS = "success"
-	SCHEDULE_TASK_FAILED = "fail" //调度不成功，
+	SCHEDULE_TASK_NOAVAILABLE = "noavailable" //调度不成功，
 	SCHEDULE_TASK_DONE = "done" //已经全部调度完毕
 )
 
 type Master struct {
-	// Your definitions here.
+	mu sync.Mutex
+	cond *sync.Cond //https://cyent.github.io/golang/goroutine/sync_cond/
+
 	files []string
 
 	//m个map和n个reduce
 	nReduce int
 	mMap int
+	//记录已经完成的个数
+	completedMapTask int
+	completedReduceTask int
 
 	//管理字段,通道用于通信/等待
 	mapIndexChan chan int //map 任务下标的通道
 	reduceIndexChan chan int
-	//用于保存正在运行的任务，
+	//用于保存正在运行的任务，key是map地址，value是启动时间
 	runningMapTask map[int]int64
 	runningReduceTask map[int]int64
 }
 
 
 func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error {
+	m.cond.L.Lock()
+	defer m.cond.L.Unlock()
 
 	//判断该worker有没有上次执行的complete task，并执行
 	m.finishTask(args.CompleteTask)
 
 	//进行任务分配
+	//worker在这里需要等待,sync.Cond/time.Sleep
 	for {
 		task, result := m.scheduleTask()
+		switch result {
+		case TASK_PHASE_REDUCE:
+			reply.Task = *task
+			reply.Done = false
+			return nil
+		case SCHEDULE_TASK_NOAVAILABLE:
+			//需要等待
+			m.cond.Wait()
+		case SCHEDULE_TASK_DONE:
+			reply.Done = true
+			return nil
+		}
 	}
-
-	return nil
 }
 
 //分配任务
@@ -60,7 +82,7 @@ func (m *Master) scheduleTask() (*Task, string) {
 	default:
 		//表示任务已经分配完毕，但可能还有正在运行的任务
 		if len(m.runningReduceTask) > 0 {
-			return nil, SCHEDULE_TASK_FAILED
+			return nil, SCHEDULE_TASK_NOAVAILABLE
 		}
 	}
 
@@ -76,7 +98,7 @@ func (m *Master) scheduleTask() (*Task, string) {
 		return task, SCHEDULE_TASK_SUCCESS
 	default:
 		if len(m.runningReduceTask) > 0 {
-			return nil, SCHEDULE_TASK_FAILED
+			return nil, SCHEDULE_TASK_NOAVAILABLE
 		}
 	}
 
@@ -93,12 +115,14 @@ func (m *Master) finishTask(task Task) {
 			return
 		}
 		delete(m.runningMapTask, task.MapTask.MapIndex)
+		m.completedMapTask += 1
 
 	case TASK_PHASE_REDUCE:
 		if _, ok := m.runningReduceTask[task.ReduceTask.ReduceIndex]; !ok {
 			return
 		}
 		delete(m.runningReduceTask, task.ReduceTask.ReduceIndex)
+		m.completedReduceTask += 1
 	}
 }
 
@@ -134,12 +158,41 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
-
-	// Your code here.
-
-
+	m.cond.L.Lock()
+	defer m.cond.L.Lock()
+	ret := m.completedMapTask == m.mMap && m.completedReduceTask == m.nReduce
 	return ret
+}
+
+//每10s检查下已经发送的任务是否已经完成，没有完成的话，需要重新发送给其他的worker执行
+func (m *Master) taskChecker() {
+	//轮询
+	const TIMEOUT = 10
+	for {
+		if m.Done() == true {
+			return
+		}
+		m.cond.L.Lock()
+		reissue := false
+		now := time.Now().Unix()
+		for mapIndex, startTime  := range m.runningMapTask {
+			if startTime + TIMEOUT < now {
+				delete(m.runningMapTask, mapIndex)
+				reissue = true
+			}
+		}
+		for reduceIndex, startTime := range m.runningReduceTask {
+			if startTime + TIMEOUT < now {
+				delete(m.runningReduceTask, reduceIndex)
+				reissue = true
+			}
+		}
+		if reissue {
+			m.cond.Broadcast()
+		}
+		m.cond.L.Unlock()
+		time.Sleep(time.Second)
+	}
 }
 
 //
@@ -150,7 +203,7 @@ func (m *Master) Done() bool {
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
-	// Your code here.
+	m.cond = sync.NewCond(&m.mu)
 	m.files = files
 
 	m.mMap = len(files)

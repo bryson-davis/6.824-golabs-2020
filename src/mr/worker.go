@@ -155,7 +155,7 @@ func Map(fileName string, mapIndex int, reduceNumber int, mapf func(string, stri
 	}
 	for reduceIndex, bucket := range buckets {
 		//将内容写到临时文件
-		file, err := ioutil.TempFile("./tmp", "map-temp")
+		file, err := ioutil.TempFile(".tmp", "map-temp")
 		if err != nil {
 			log.Fatalf("create temp file failed %v", err)
 		}
