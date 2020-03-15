@@ -223,6 +223,8 @@ func MakeMaster(files []string, nReduce int) *Master {
 		m.reduceIndexChan <- i
 	}
 
+	log.Println("master start: ", m)
+
 	m.server()
 	return &m
 }

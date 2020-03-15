@@ -37,6 +37,7 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	log.Println("start new worker")
 	//进入循环中，不断从向master发送rpc请求，获取任务
 	//构建请求，一直会用
 	args := &AskForTaskArgs{}
@@ -45,10 +46,12 @@ func Worker(mapf func(string, string) []KeyValue,
 		reply, ok := AskForTask(args)
 		//根据响应的task信息，执行map或者reduce，或者退出
 		if !ok || reply.Done {
+			log.Println("worker exist")
 			break
 		}
 		//获取task结构体信息
 		task := &reply.Task
+		log.Println("worker get new task: ", task.Phase)
 		args.CompleteTask = *task
 		if task.Phase == TASK_PHASE_MAP {
 			mapTask := task.MapTask
