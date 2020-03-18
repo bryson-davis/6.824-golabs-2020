@@ -83,7 +83,8 @@ func CallExample() {
 	reply := ExampleReply{}
 
 	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
+	ok := call("Master.Example1", &args, &reply)
+	log.Println("ok: ", ok)
 
 	// reply.Y should be 100.
 	fmt.Printf("reply.Y %v\n", reply.Y)

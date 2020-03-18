@@ -40,9 +40,12 @@ type Master struct {
 
 
 func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error {
+	log.Println("start AskForTask")
+
 	m.cond.L.Lock()
 	defer m.cond.L.Unlock()
 
+	log.Println("starting")
 	//判断该worker有没有上次执行的complete task，并执行
 	m.finishTask(args.CompleteTask)
 
@@ -162,7 +165,7 @@ func (m *Master) server() {
 //
 func (m *Master) Done() bool {
 	m.cond.L.Lock()
-	defer m.cond.L.Lock()
+	defer m.cond.L.Unlock()
 	ret := m.completedMapTask == m.mMap && m.completedReduceTask == m.nReduce
 	return ret
 }
