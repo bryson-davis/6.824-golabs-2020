@@ -50,6 +50,7 @@ func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error 
 	//worker在这里需要等待,sync.Cond/time.Sleep
 	for {
 		task, result := m.scheduleTask()
+		log.Println("end scheduler, result: ", result)
 		switch result {
 		case TASK_PHASE_REDUCE:
 			reply.Task = *task
@@ -68,6 +69,7 @@ func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error 
 //分配任务
 func (m *Master) scheduleTask() (*Task, string) {
 	//先分配map task，保证全部的map task都分配出去了并完成了，才进入reduce的环节
+	log.Println("start scheduleTask")
 	select {
 	case mapIndex := <-m.mapIndexChan:
 		task := &Task{
@@ -107,6 +109,7 @@ func (m *Master) scheduleTask() (*Task, string) {
 
 //处理已经处理成功的任务
 func (m *Master) finishTask(task Task) {
+	log.Println("task phase:", task.Phase )
 	switch task.Phase {
 	case TASK_PHASE_MAP:
 		//判断是否在running里面

@@ -43,7 +43,9 @@ func Worker(mapf func(string, string) []KeyValue,
 	args := &AskForTaskArgs{}
 	for {
 		//调用rpc（将上一次的请求结果放置到请求中）
+		log.Println("start AskForTask")
 		reply, ok := AskForTask(args)
+		log.Println("end AskForTask")
 		//根据响应的task信息，执行map或者reduce，或者退出
 		if !ok || reply.Done {
 			log.Println("worker exist")
@@ -101,6 +103,7 @@ func AskForTask(args *AskForTaskArgs) (*AskForTaskReply, bool) {
 //
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
+	log.Println("Call star")
 	sockname := masterSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
@@ -108,7 +111,9 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	}
 	defer c.Close()
 
+	log.Println("DiaHttp finish")
 	err = c.Call(rpcname, args, reply)
+	log.Println("Call finish")
 	if err == nil {
 		return true
 	}
