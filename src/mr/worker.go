@@ -43,10 +43,10 @@ func Worker(mapf func(string, string) []KeyValue,
 	args := &AskForTaskArgs{}
 	for {
 		//调用rpc（将上一次的请求结果放置到请求中）
-		log.Println("start AskForTask")
 		reply, ok := AskForTask(args)
-		log.Println("end AskForTask")
 		//根据响应的task信息，执行map或者reduce，或者退出
+		log.Println("ok: ", ok)
+		log.Println("reply: ", reply)
 		if !ok || reply.Done {
 			log.Println("worker exist")
 			break
@@ -104,7 +104,6 @@ func AskForTask(args *AskForTaskArgs) (*AskForTaskReply, bool) {
 //
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	log.Println("Call star")
 	sockname := masterSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
@@ -112,9 +111,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	}
 	defer c.Close()
 
-	log.Println("DiaHttp finish")
 	err = c.Call(rpcname, args, reply)
-	log.Println("Call finish")
 	if err == nil {
 		return true
 	}
@@ -164,12 +161,13 @@ func Map(fileName string, mapIndex int, reduceNumber int, mapf func(string, stri
 	}
 	for reduceIndex, bucket := range buckets {
 		//将内容写到临时文件
-		file, err := ioutil.TempFile(".tmp", "map-temp")
+		file, err := ioutil.TempFile("./tmp", "map-temp")
 		if err != nil {
 			log.Fatalf("create temp file failed %v", err)
 		}
 		enc := json.NewEncoder(file)
 		for _, kv := range bucket {
+			log.Println("bucket    ", kv)
 			err := enc.Encode(&kv)
 			if err != nil {
 				log.Fatalf("json encode file err %v", err)
@@ -181,6 +179,7 @@ func Map(fileName string, mapIndex int, reduceNumber int, mapf func(string, stri
 		if err != nil {
 			log.Fatalf("rename faile, %v", err)
 		}
+		log.Println("fileName: ", file.Name())
 	}
 
 }
@@ -224,6 +223,7 @@ func Reduce(mapNumber int, reduceIndex int, reducef func(string, []string) strin
 		//处理每个键值
 		output := reducef(intermediate[i].Key, values)
 
+		log.Println("reduce ", intermediate[i].Key, " ", output)
 		//reduce output
 		fmt.Fprintf(f, "%v %v\n", intermediate[i].Key, output)
 
@@ -231,4 +231,5 @@ func Reduce(mapNumber int, reduceIndex int, reducef func(string, []string) strin
 	}
 	f.Close()
 	os.Rename(f.Name(), outfileName)
+	log.Println("reduce output file: ", f.Name())
 }
