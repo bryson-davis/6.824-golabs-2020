@@ -40,12 +40,9 @@ type Master struct {
 
 
 func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error {
-	log.Println("start AskForTask")
-
 	m.cond.L.Lock()
 	defer m.cond.L.Unlock()
 
-	log.Println("starting")
 	//判断该worker有没有上次执行的complete task，并执行
 	m.finishTask(args.CompleteTask)
 
@@ -53,9 +50,8 @@ func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error 
 	//worker在这里需要等待,sync.Cond/time.Sleep
 	for {
 		task, result := m.scheduleTask()
-		log.Println("end scheduler, result: ", result)
 		switch result {
-		case TASK_PHASE_REDUCE:
+		case SCHEDULE_TASK_SUCCESS:
 			reply.Task = *task
 			reply.Done = false
 			return nil
@@ -72,7 +68,7 @@ func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error 
 //分配任务
 func (m *Master) scheduleTask() (*Task, string) {
 	//先分配map task，保证全部的map task都分配出去了并完成了，才进入reduce的环节
-	log.Println("start scheduleTask")
+	now := time.Now().Unix()
 	select {
 	case mapIndex := <-m.mapIndexChan:
 		task := &Task{
@@ -83,6 +79,7 @@ func (m *Master) scheduleTask() (*Task, string) {
 				ReduceNumber: m.nReduce,
 			},
 		}
+		m.runningMapTask[mapIndex] = now
 		return task, SCHEDULE_TASK_SUCCESS
 	default:
 		//表示任务已经分配完毕，但可能还有正在运行的任务
@@ -100,6 +97,7 @@ func (m *Master) scheduleTask() (*Task, string) {
 				ReduceIndex: reduceIndex,
 			},
 		}
+		m.runningReduceTask[reduceIndex] = now
 		return task, SCHEDULE_TASK_SUCCESS
 	default:
 		if len(m.runningReduceTask) > 0 {
@@ -112,7 +110,6 @@ func (m *Master) scheduleTask() (*Task, string) {
 
 //处理已经处理成功的任务
 func (m *Master) finishTask(task Task) {
-	log.Println("task phase:", task.Phase )
 	switch task.Phase {
 	case TASK_PHASE_MAP:
 		//判断是否在running里面
@@ -229,7 +226,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 		m.reduceIndexChan <- i
 	}
 
-	log.Println("master start: ", m)
+	//log.Println("master start: ", m)
 
 	m.server()
 	return &m

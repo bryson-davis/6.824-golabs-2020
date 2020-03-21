@@ -37,7 +37,6 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	log.Println("start new worker")
 	//进入循环中，不断从向master发送rpc请求，获取任务
 	//构建请求，一直会用
 	args := &AskForTaskArgs{}
@@ -45,16 +44,12 @@ func Worker(mapf func(string, string) []KeyValue,
 		//调用rpc（将上一次的请求结果放置到请求中）
 		reply, ok := AskForTask(args)
 		//根据响应的task信息，执行map或者reduce，或者退出
-		log.Println("ok: ", ok)
-		log.Println("reply: ", reply)
 		if !ok || reply.Done {
-			log.Println("worker exist")
+			//log.Println("worker exist")
 			break
 		}
 		//获取task结构体信息
 		task := &reply.Task
-		log.Println("worker get new task: ", task.Phase)
-		args.CompleteTask = *task
 		if task.Phase == TASK_PHASE_MAP {
 			mapTask := task.MapTask
 			Map(mapTask.FileName, mapTask.MapIndex, mapTask.ReduceNumber, mapf)
@@ -62,6 +57,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			reduceTask := task.ReduceTask
 			Reduce(reduceTask.MapNumber, reduceTask.ReduceIndex, reducef)
 		}
+		args.CompleteTask = *task
 	}
 
 }
@@ -83,8 +79,8 @@ func CallExample() {
 	reply := ExampleReply{}
 
 	// send the RPC request, wait for the reply.
-	ok := call("Master.Example1", &args, &reply)
-	log.Println("ok: ", ok)
+	call("Master.Example1", &args, &reply)
+	//log.Println("ok: ", ok)
 
 	// reply.Y should be 100.
 	fmt.Printf("reply.Y %v\n", reply.Y)
@@ -161,13 +157,14 @@ func Map(fileName string, mapIndex int, reduceNumber int, mapf func(string, stri
 	}
 	for reduceIndex, bucket := range buckets {
 		//将内容写到临时文件
-		file, err := ioutil.TempFile("./tmp", "map-temp")
+		//file, err := ioutil.TempFile("./tmp", "map-temp")
+		file, err := ioutil.TempFile("", "map-temp")
 		if err != nil {
 			log.Fatalf("create temp file failed %v", err)
 		}
 		enc := json.NewEncoder(file)
 		for _, kv := range bucket {
-			log.Println("bucket    ", kv)
+			//log.Println("bucket    ", kv)
 			err := enc.Encode(&kv)
 			if err != nil {
 				log.Fatalf("json encode file err %v", err)
@@ -175,11 +172,12 @@ func Map(fileName string, mapIndex int, reduceNumber int, mapf func(string, stri
 		}
 		//获取文件名保存
 		filename := genIntermediateFileName(mapIndex, reduceIndex)
+		//err = os.Rename(file.Name(), "./tmp/"+filename)
 		err = os.Rename(file.Name(), filename)
 		if err != nil {
 			log.Fatalf("rename faile, %v", err)
 		}
-		log.Println("fileName: ", file.Name())
+		//log.Println("fileName: ", file.Name())
 	}
 
 }
@@ -189,7 +187,8 @@ func Reduce(mapNumber int, reduceIndex int, reducef func(string, []string) strin
 	//读取全部的临时文件内容
 	intermediate := make([]KeyValue, 0)
 	for i := 0; i < mapNumber; i++ {
-		fileName := "./tmp/" + genIntermediateFileName(i, reduceIndex)
+		//fileName := "./tmp/" + genIntermediateFileName(i, reduceIndex)
+		fileName := genIntermediateFileName(i, reduceIndex)
 		file, err := os.Open(fileName)
 		if err != nil {
 			log.Fatalf("cannot open %v", fileName)
@@ -207,7 +206,8 @@ func Reduce(mapNumber int, reduceIndex int, reducef func(string, []string) strin
 	//进行排序
 	sort.Sort(ByKey(intermediate))
 	outfileName := genOutFileName(reduceIndex)
-	f, _ := ioutil.TempFile("./tmp", "reduce_temp")
+	//f, _ := ioutil.TempFile("./tmp", "reduce_temp")
+	f, _ := ioutil.TempFile("", "reduce_temp")
 	//进行统计
 	i := 0
 	for i < len(intermediate) {
@@ -217,19 +217,20 @@ func Reduce(mapNumber int, reduceIndex int, reducef func(string, []string) strin
 			j++
 		}
 		values := []string{}
-		for k := i; i < j; k++ {
+		for k := i; k < j; k++ {
 			values = append(values, intermediate[k].Value)
 		}
 		//处理每个键值
 		output := reducef(intermediate[i].Key, values)
 
-		log.Println("reduce ", intermediate[i].Key, " ", output)
+		//log.Println("reduce ", intermediate[i].Key, " ", output)
 		//reduce output
 		fmt.Fprintf(f, "%v %v\n", intermediate[i].Key, output)
 
 		i = j
 	}
 	f.Close()
-	os.Rename(f.Name(), outfileName)
-	log.Println("reduce output file: ", f.Name())
+	//os.Rename(f.Name(), "./tmp/" + outfileName)
+	os.Rename(f.Name(),  outfileName)
+	//log.Println("reduce output file: ", outfileName)
 }
