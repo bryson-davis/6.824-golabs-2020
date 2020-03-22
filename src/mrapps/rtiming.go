@@ -7,7 +7,9 @@ package main
 // go build -buildmode=plugin rtiming.go
 //
 
-import "../mr"
+import (
+	"../mr"
+)
 import "fmt"
 import "os"
 import "syscall"
@@ -19,6 +21,7 @@ func nparallel(phase string) int {
 	// we're running at the same time as them.
 	pid := os.Getpid()
 	myfilename := fmt.Sprintf("mr-worker-%s-%d", phase, pid)
+	//log.Println("rtiming: ", myfilename)
 	err := ioutil.WriteFile(myfilename, []byte("x"), 0666)
 	if err != nil {
 		panic(err)

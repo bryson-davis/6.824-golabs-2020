@@ -40,6 +40,7 @@ type Master struct {
 
 
 func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error {
+	//log.Println(args.Pid)
 	m.cond.L.Lock()
 	defer m.cond.L.Unlock()
 
@@ -49,6 +50,7 @@ func (m *Master) AskForTask(args *AskForTaskArgs, reply *AskForTaskReply) error 
 	//进行任务分配
 	//worker在这里需要等待,sync.Cond/time.Sleep
 	for {
+		var result string
 		task, result := m.scheduleTask()
 		switch result {
 		case SCHEDULE_TASK_SUCCESS:
@@ -83,7 +85,7 @@ func (m *Master) scheduleTask() (*Task, string) {
 		return task, SCHEDULE_TASK_SUCCESS
 	default:
 		//表示任务已经分配完毕，但可能还有正在运行的任务
-		if len(m.runningReduceTask) > 0 {
+		if len(m.runningMapTask) > 0 {
 			return nil, SCHEDULE_TASK_NOAVAILABLE
 		}
 	}
@@ -119,13 +121,14 @@ func (m *Master) finishTask(task Task) {
 		}
 		delete(m.runningMapTask, task.MapTask.MapIndex)
 		m.completedMapTask += 1
-
+		m.cond.Broadcast() //in order to avoid askfortask wait forever (for reduce paralissm pass)
 	case TASK_PHASE_REDUCE:
 		if _, ok := m.runningReduceTask[task.ReduceTask.ReduceIndex]; !ok {
 			return
 		}
 		delete(m.runningReduceTask, task.ReduceTask.ReduceIndex)
 		m.completedReduceTask += 1
+		m.cond.Broadcast() //in order to avoid askfortask wait forever (for reduce paralissm pass)
 	}
 }
 
@@ -181,12 +184,14 @@ func (m *Master) taskChecker() {
 		for mapIndex, startTime  := range m.runningMapTask {
 			if startTime + TIMEOUT < now {
 				delete(m.runningMapTask, mapIndex)
+				m.mapIndexChan <- mapIndex //reschedule
 				reissue = true
 			}
 		}
 		for reduceIndex, startTime := range m.runningReduceTask {
 			if startTime + TIMEOUT < now {
 				delete(m.runningReduceTask, reduceIndex)
+				m.reduceIndexChan <- reduceIndex //reschedule
 				reissue = true
 			}
 		}
@@ -227,6 +232,8 @@ func MakeMaster(files []string, nReduce int) *Master {
 	}
 
 	//log.Println("master start: ", m)
+
+	go m.taskChecker()
 
 	m.server()
 	return &m

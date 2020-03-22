@@ -50,6 +50,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		//获取task结构体信息
 		task := &reply.Task
+
 		if task.Phase == TASK_PHASE_MAP {
 			mapTask := task.MapTask
 			Map(mapTask.FileName, mapTask.MapIndex, mapTask.ReduceNumber, mapf)
