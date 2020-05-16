@@ -38,7 +38,7 @@ const (
 )
 
 //
-// as each Raft peer becomes aware that successive log entries are
+// as each Raft peer becomes aware that successive log Entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
 // CommandValid to true to indicate that the ApplyMsg contains a newly
@@ -144,10 +144,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	term int
-	candidateId int
-	lastLogIndex int
-	lastLogTerm int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -156,8 +156,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	term int
-	voteGranted bool
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -168,49 +168,71 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.currentTerm > args.term {
-		reply.voteGranted = false
-		reply.term = rf.currentTerm
+	if rf.currentTerm > args.Term {
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
 		return
 	}
-	// 当前身份是Follower
-	if rf.voterFor == -1 || rf.voterFor == args.candidateId {
+
+	if rf.currentTerm < args.Term {
+		rf.currentTerm = args.Term
+		rf.voterFor = -1
+		rf.state = FOLLOWER
+	}
+
+	if rf.voterFor == -1 || rf.voterFor == args.CandidateId {
 		lastLogIndex := len(rf.log) -1
 		lastLogTerm := rf.log[lastLogIndex].term
-		if lastLogTerm <= args.lastLogTerm && lastLogIndex <= args.lastLogIndex {
-			reply.voteGranted = true
-			reply.term = rf.currentTerm
+		if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
+			rf.state = FOLLOWER
+			rf.voterFor = args.CandidateId
+			rf.refreshExpireTime()
+
+			reply.VoteGranted = true
+			reply.Term = rf.currentTerm
+			return
 		}
-		return
 	}
-	//当前身份是Candidate
+
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+	return
 
 }
 
 type AppendEntriesArgs struct {
-	term int
-	leaderId int
-	preLogIndex int
-	preLogTerm int
-	entries []LogEntry
+	Term        int
+	LeaderId    int
+	PreLogIndex int
+	PreLogTerm  int
+	Entries     []LogEntry
 }
 
 type AppendEntriesReply struct {
-	term int
-	success bool
+	Term    int
+	Success bool
 }
 
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// 什么情况下可以认为心跳是合法的呢
-	if args.term < rf.currentTerm {
-		if args.entries == nil {
-			rf.refreshExpireTime()
-		}
-		reply.success = false
-		reply.term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		reply.Term = rf.currentTerm
 		return
 	}
+	//心跳处理
+	//处理是老leader的情况/candidater的情况
+	rf.state = FOLLOWER
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.voterFor = -1
+	}
+	rf.refreshExpireTime()
+	reply.Term = rf.currentTerm //设置完自己的再返回
+	reply.Success = true
+	return
+
 }
 //
 // example code to send a RequestVote RPC to a server.
@@ -319,6 +341,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FOLLOWER
 	rf.refreshExpireTime()
 
+	rf.currentTerm = 0
+	rf.voterFor = -1
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
 	// Your initialization code here (2A, 2B, 2C).
 	//进入死循环，不断更新自己的状态
 	go rf.tick()
@@ -363,18 +390,15 @@ func (rf *Raft) tick() {
 }
 
 func (rf *Raft) requestVote() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	rf.currentTerm++
 	count := 1
 	rf.voterFor = rf.me
 	rf.refreshExpireTime()
 	args := &RequestVoteArgs{
-		term:         rf.currentTerm,
-		candidateId:  rf.me,
-		lastLogIndex: len(rf.log) - 1,
-		lastLogTerm:  rf.log[len(rf.log)-1].term,
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: len(rf.log) - 1,
+		LastLogTerm:  rf.log[len(rf.log)-1].term,
 	}
 
 	for i, _ := range rf.peers {
@@ -390,7 +414,18 @@ func (rf *Raft) requestVote() {
 				fmt.Println("rpc failed")
 				return
 			}
-			if reply.voteGranted {
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+
+			//获取了一个更新的响应
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
+				rf.state = FOLLOWER
+				rf.voterFor = -1
+				return
+			}
+
+			if reply.VoteGranted && rf.state == CANDIDATE{
 				count++
 			}
 
@@ -411,11 +446,24 @@ func (rf *Raft) heartbeat() {
 			continue
 		}
 		args := &AppendEntriesArgs{
-			term:        rf.currentTerm,
-			leaderId:    rf.me,
-			entries:     nil,
+			Term:     rf.currentTerm,
+			LeaderId: rf.me,
+			Entries:  nil,
 		}
-		reply := &AppendEntriesReply{}
-		rf.sendAppendEntries(i, args, reply)
+		go func(i int) {
+			reply := &AppendEntriesReply{}
+			ok := rf.sendAppendEntries(i, args, reply)
+			if !ok {
+				return
+			}
+			//收到一个新leader的响应
+			if reply.Term > rf.currentTerm {
+				rf.state = FOLLOWER
+				rf.voterFor = -1
+				rf.currentTerm = reply.Term
+				rf.refreshExpireTime()
+			}
+		}(i)
+
 	}
 }
