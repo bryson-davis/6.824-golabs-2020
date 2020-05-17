@@ -202,6 +202,7 @@ func (cfg *config) start1(i int) {
 		}
 	}()
 
+	fmt.Println("debug: config Make raft")
 	rf := Make(ends, i, cfg.saved[i], applyCh)
 
 	cfg.mu.Lock()
@@ -326,6 +327,7 @@ func (cfg *config) checkOneLeader() int {
 		if len(leaders) != 0 {
 			return leaders[lastTermWithLeader][0]
 		}
+		fmt.Println("debug: ", leaders)
 	}
 	cfg.t.Fatalf("expected one leader, got none")
 	return -1

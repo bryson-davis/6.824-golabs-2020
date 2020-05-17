@@ -55,7 +55,7 @@ type ApplyMsg struct {
 }
 
 type LogEntry struct {
-	term int
+	Term int
 }
 
 //
@@ -181,8 +181,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if rf.voterFor == -1 || rf.voterFor == args.CandidateId {
-		lastLogIndex := len(rf.log) -1
-		lastLogTerm := rf.log[lastLogIndex].term
+		var lastLogIndex, lastLogTerm int
+		if len(rf.log) == 0 {
+			lastLogIndex = -1
+			lastLogTerm = -1
+		} else {
+			lastLogIndex = len(rf.log) -1
+			lastLogTerm = rf.log[lastLogIndex].Term
+		}
 		if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
 			rf.state = FOLLOWER
 			rf.voterFor = args.CandidateId
@@ -332,6 +338,7 @@ func (rf *Raft) killed() bool {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	fmt.Println("debug: make raft")
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -345,6 +352,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.voterFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.log = make([]LogEntry, 1) //从1开始，
 
 	// Your initialization code here (2A, 2B, 2C).
 	//进入死循环，不断更新自己的状态
@@ -374,15 +382,19 @@ func (rf *Raft) tick() {
 		//检查是否超时
 		if !rf.expireTime.After(time.Now()) {
 			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 		switch rf.state {
 		case LEADER:
 			//周期性发送心跳
 			rf.heartbeat()
+			//打印下当前leader的情况
 		case FOLLOWER:
 			rf.state = CANDIDATE
+			fmt.Printf("debug: %d FOLLOWER->CANDIDATE in term %d\n", rf.me, rf.currentTerm)
 			fallthrough
 		case CANDIDATE:
+			//fmt.Printf("debug: %d CANDIDATE request vote\n", rf.me)
 			rf.requestVote()
 		}
 	}
@@ -397,8 +409,13 @@ func (rf *Raft) requestVote() {
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: len(rf.log) - 1,
-		LastLogTerm:  rf.log[len(rf.log)-1].term,
+	}
+	if len(rf.log) == 0 {
+		args.LastLogIndex = -1
+		args.LastLogTerm = -1
+	} else {
+		args.LastLogIndex = len(rf.log) - 1
+		args.LastLogTerm = rf.log[len(rf.log)-1].Term
 	}
 
 	for i, _ := range rf.peers {
@@ -408,9 +425,9 @@ func (rf *Raft) requestVote() {
 		//需要修改为协程处理
 		go func(i int) {
 			reply := &RequestVoteReply{}
-			result := rf.sendRequestVote(i, args, reply)
+			ok := rf.sendRequestVote(i, args, reply)
 			//网络不通
-			if !result {
+			if !ok {
 				fmt.Println("rpc failed")
 				return
 			}
@@ -422,15 +439,18 @@ func (rf *Raft) requestVote() {
 				rf.currentTerm = reply.Term
 				rf.state = FOLLOWER
 				rf.voterFor = -1
+
 				return
 			}
 
 			if reply.VoteGranted && rf.state == CANDIDATE{
 				count++
+				fmt.Printf("%d count: %d\n", count, rf.me)
 			}
-
+			fmt.Printf("%d got vote from %d in term %d, the count is count %d \n", rf.me, i, rf.currentTerm, count)
 			//获取了大多数的投票
 			if count > len(rf.peers) / 2 {
+				fmt.Printf("debug: %d CANDIDATE->LEADER in term %d\n", rf.me, rf.currentTerm)
 				rf.state = LEADER
 				//发送心跳
 				rf.heartbeat()
