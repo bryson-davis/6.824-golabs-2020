@@ -24,7 +24,8 @@ import (
 	"time"
 )
 import "sync/atomic"
-import "../labrpc"
+//import "../labrpc"
+import "labrpc"
 
 // import "bytes"
 // import "../labgob"
