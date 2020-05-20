@@ -455,6 +455,7 @@ func (rf *Raft) requestVote() {
 }
 
 func (rf *Raft) heartbeat() {
+	//不要忘记要刷新自身的定时器
 	rf.refreshExpireTime()
 	for i, _ := range rf.peers {
 		if i == rf.me {
@@ -471,9 +472,7 @@ func (rf *Raft) heartbeat() {
 			if !ok {
 				return
 			}
-			//收到一个新leader的响应，这里务必记得加锁，不然会导致CANDIDATE变为FOLLOWER的信息无法及时同步；可以试试把锁删除，看看效果
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
+			//收到一个新leader的响应
 
 			if reply.Term > rf.currentTerm {
 				rf.state = FOLLOWER
