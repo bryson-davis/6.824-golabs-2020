@@ -230,6 +230,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	//心跳处理
 	//处理是老leader的情况/candidater的情况
+	fmt.Printf("debug: hearbeat from server-%d, server-%d %s->FOLLOWER\n", args.LeaderId, rf.me, rf.state)
 	rf.state = FOLLOWER
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
@@ -375,13 +376,10 @@ func (rf *Raft) refreshExpireTime() {
 
 // 周期性进行更新与操作
 func (rf *Raft) tick() {
-	for {
-		if rf.killed() {
-			break
-		}
+	for !rf.killed() {
 
 		//检查是否超时
-		if !rf.expireTime.After(time.Now()) {
+		if rf.expireTime.After(time.Now()) {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
@@ -392,7 +390,7 @@ func (rf *Raft) tick() {
 			//打印下当前leader的情况
 		case FOLLOWER:
 			rf.state = CANDIDATE
-			fmt.Printf("debug: %d FOLLOWER->CANDIDATE in term %d\n", rf.me, rf.currentTerm)
+			fmt.Printf("debug: server-%d FOLLOWER->CANDIDATE in term %d\n", rf.me, rf.currentTerm)
 			fallthrough
 		case CANDIDATE:
 			//fmt.Printf("debug: %d CANDIDATE request vote\n", rf.me)
@@ -404,7 +402,7 @@ func (rf *Raft) tick() {
 
 func (rf *Raft) requestVote() {
 	rf.currentTerm++
-	count := 1
+	var count int32 = 1
 	rf.voterFor = rf.me
 	rf.refreshExpireTime()
 	args := &RequestVoteArgs{
@@ -440,21 +438,16 @@ func (rf *Raft) requestVote() {
 				rf.currentTerm = reply.Term
 				rf.state = FOLLOWER
 				rf.voterFor = -1
-
 				return
 			}
 
 			if reply.VoteGranted && rf.state == CANDIDATE{
-				count++
-				fmt.Printf("%d count: %d\n", count, rf.me)
-			}
-			fmt.Printf("%d got vote from %d in term %d, the count is count %d \n", rf.me, i, rf.currentTerm, count)
-			//获取了大多数的投票
-			if count > len(rf.peers) / 2 {
-				fmt.Printf("debug: %d CANDIDATE->LEADER in term %d\n", rf.me, rf.currentTerm)
-				rf.state = LEADER
-				//发送心跳
-				rf.heartbeat()
+				fmt.Printf("debug: server-%d got vote from server-%d in term %d, the count is %d \n", rf.me, i, rf.currentTerm, int(atomic.LoadInt32(&count)) + 1)
+				if int(atomic.AddInt32(&count, 1)) > len(rf.peers) / 2 {
+					fmt.Printf("debug: server-%d CANDIDATE->LEADER in term %d\n", rf.me, rf.currentTerm)
+					rf.state = LEADER
+					rf.heartbeat()
+				}
 			}
 		}(i)
 	}
@@ -462,6 +455,7 @@ func (rf *Raft) requestVote() {
 }
 
 func (rf *Raft) heartbeat() {
+	rf.refreshExpireTime()
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			continue
@@ -477,7 +471,10 @@ func (rf *Raft) heartbeat() {
 			if !ok {
 				return
 			}
-			//收到一个新leader的响应
+			//收到一个新leader的响应，这里务必记得加锁，不然会导致CANDIDATE变为FOLLOWER的信息无法及时同步；可以试试把锁删除，看看效果
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+
 			if reply.Term > rf.currentTerm {
 				rf.state = FOLLOWER
 				rf.voterFor = -1
