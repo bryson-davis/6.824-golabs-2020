@@ -183,13 +183,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.voterFor == -1 || rf.voterFor == args.CandidateId {
 		var lastLogIndex, lastLogTerm int
-		if len(rf.log) == 0 {
-			lastLogIndex = -1
-			lastLogTerm = -1
-		} else {
-			lastLogIndex = len(rf.log) -1
-			lastLogTerm = rf.log[lastLogIndex].Term
-		}
+		lastLogIndex = len(rf.log) -1
+		lastLogTerm = rf.log[lastLogIndex].Term
 		if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
 			rf.state = FOLLOWER
 			rf.voterFor = args.CandidateId
@@ -222,7 +217,6 @@ type AppendEntriesReply struct {
 
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// 什么情况下可以认为心跳是合法的呢
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
@@ -391,7 +385,7 @@ func (rf *Raft) tick() {
 		case FOLLOWER:
 			rf.state = CANDIDATE
 			fmt.Printf("debug: server-%d FOLLOWER->CANDIDATE in term %d\n", rf.me, rf.currentTerm)
-			fallthrough
+			fallthrough //这里通过fallthrough的方式直接进入身份为Candidater的身份进行发送投票请求
 		case CANDIDATE:
 			//fmt.Printf("debug: %d CANDIDATE request vote\n", rf.me)
 			rf.requestVote()
@@ -409,13 +403,8 @@ func (rf *Raft) requestVote() {
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
 	}
-	if len(rf.log) == 0 {
-		args.LastLogIndex = -1
-		args.LastLogTerm = -1
-	} else {
-		args.LastLogIndex = len(rf.log) - 1
-		args.LastLogTerm = rf.log[len(rf.log)-1].Term
-	}
+	args.LastLogIndex = len(rf.log) - 1
+	args.LastLogTerm = rf.log[len(rf.log)-1].Term
 
 	for i, _ := range rf.peers {
 		if i == rf.me {
