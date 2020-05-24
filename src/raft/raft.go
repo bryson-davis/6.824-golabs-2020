@@ -57,6 +57,8 @@ type ApplyMsg struct {
 
 type LogEntry struct {
 	Term int
+	Command interface{}
+	Index int
 }
 
 //
@@ -83,6 +85,10 @@ type Raft struct {
 
 	nextIndex []int
 	matchIndex []int
+
+	//辅助变量
+	applyCh chan ApplyMsg
+	applyCond *sync.Cond
 }
 
 // return currentTerm and whether this server
@@ -203,11 +209,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 type AppendEntriesArgs struct {
-	Term        int
-	LeaderId    int
-	PreLogIndex int
-	PreLogTerm  int
-	Entries     []LogEntry
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
@@ -222,18 +229,55 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.currentTerm
 		return
 	}
+
 	//心跳处理
-	//处理是老leader的情况/candidater的情况
-	fmt.Printf("debug: hearbeat from server-%d, server-%d %s->FOLLOWER\n", args.LeaderId, rf.me, rf.state)
 	rf.state = FOLLOWER
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.voterFor = -1
 	}
-	rf.refreshExpireTime()
-	reply.Term = rf.currentTerm //设置完自己的再返回
-	reply.Success = true
-	return
+
+	if len(args.Entries) == 0 {
+		//fmt.Printf("debug: hearbeat from server-%d, server-%d %s->FOLLOWER\n", args.LeaderId, rf.me, rf.state)
+		rf.refreshExpireTime()
+		reply.Term = rf.currentTerm //设置完自己的再返回
+		reply.Success = true
+		return
+	}
+
+
+	//检验日志是否匹配
+	preLogTerm := rf.log[len(rf.log)-1].Term
+	preLogIndex := len(rf.log) - 1
+	DPrintf("leader-%d to server-%d, args: %v; preLogTerm: %d, preLogIndex: %d", args.LeaderId, rf.me, args, preLogTerm, preLogIndex)
+	//日志不存在，当前节点比较短
+	if args.PrevLogTerm > preLogIndex {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		fmt.Printf("debug: server-%d logIndex dis match\n", rf.me)
+		return
+	}
+	//日志存在但不匹配，当前节点比较长或者同长，但是内容不同
+	if args.PrevLogIndex != preLogIndex || args.PrevLogTerm != preLogTerm {
+		rf.log = rf.log[:args.PrevLogIndex] //删除不同的及后续所有
+
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		fmt.Printf("debug: server-%d logIndex dis match", rf.me)
+		return
+	}
+
+	//添加新的
+	rf.log = append(rf.log, args.Entries...)
+	if args.LeaderCommit > rf.commitIndex {
+		//取最小值的原因在于可能是leader发现这个follower缺少日志，往前找的log信息
+		if args.LeaderCommit < len(rf.log) - 1 {
+			rf.commitIndex = args.LeaderCommit
+		} else {
+			rf.commitIndex = args.LeaderCommit
+		}
+		rf.applyCond.Broadcast() //通知进行提交
+	}
 
 }
 //
@@ -295,8 +339,32 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+	isLeader = rf.state == LEADER
+	if isLeader == false {
+		return index, term, isLeader
+	}
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	//组装并发送请求
+	entry := LogEntry{
+		Term:    rf.currentTerm,
+		Command: command,
+		Index: len(rf.log),
+	}
+	//添加到log里面
+	rf.log = append(rf.log, entry)
+	index =  entry.Index
+	term = entry.Term
+
+	//进行初始化
+	for i, _ := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go rf.requestAppendEntries(i, false)
+	}
 	return index, term, isLeader
 }
 
@@ -349,10 +417,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.log = make([]LogEntry, 1) //从1开始，
+	rf.log[0] = LogEntry{
+		Term:    0,
+		Command: nil,
+		Index: 0,
+	}
+	for i := 0; i < len(peers); i++ {
+		rf.nextIndex = append(rf.nextIndex, 1)
+		rf.matchIndex = append(rf.matchIndex, 0)
+	}
+
+	//辅助变量
+	rf.applyCh = applyCh
+	rf.applyCond = sync.NewCond(&rf.mu)
 
 	// Your initialization code here (2A, 2B, 2C).
 	//进入死循环，不断更新自己的状态
 	go rf.tick()
+	go rf.doCommit()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -450,26 +532,109 @@ func (rf *Raft) heartbeat() {
 		if i == rf.me {
 			continue
 		}
-		args := &AppendEntriesArgs{
-			Term:     rf.currentTerm,
-			LeaderId: rf.me,
-			Entries:  nil,
+		go rf.requestAppendEntries(i, true)
+	}
+}
+
+//统一处理AppendEntries请求的封装与发送
+func (rf *Raft) requestAppendEntries(peerIndex int, isHeartbeat bool) {
+	//获取需要发送的log
+	rf.mu.Lock()
+	var entries []LogEntry
+	DPrintf("rf.nextIndex[%d]=%d", peerIndex, rf.nextIndex[peerIndex])
+	entries = rf.log[rf.nextIndex[peerIndex]:]
+	//封装请求体
+	args := &AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: rf.nextIndex[peerIndex] - 1,
+		PrevLogTerm:  rf.log[rf.nextIndex[peerIndex]-1].Term,
+		Entries:      entries,
+		LeaderCommit: rf.commitIndex,
+	}
+	rf.mu.Unlock()
+
+	if len(entries) == 0 && !isHeartbeat {
+		DPrintf("nothing to append Entires")
+		return
+	}
+	reply := &AppendEntriesReply{}
+	ok := rf.sendAppendEntries(peerIndex, args, reply)
+	if !ok {
+		DPrintf("rpc failed")
+		return
+	}
+	if rf.handleAppendEntriesReply(peerIndex, args, reply) {
+		DPrintf("debug: retry again")
+		go rf.requestAppendEntries(peerIndex, isHeartbeat)
+	}
+
+}
+//统一处理AppendEntries请求的响应
+func (rf *Raft) handleAppendEntriesReply(peerIndex int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	rf.mu.Lock()
+	if reply.Term > rf.currentTerm {
+		rf.state = FOLLOWER
+		rf.voterFor = -1
+		rf.currentTerm = reply.Term
+		rf.refreshExpireTime()
+		rf.mu.Unlock()
+		return false
+	}
+	isContinue := false
+	//处理成功的情况
+	if reply.Success {
+		rf.matchIndex[peerIndex] = args.PrevLogIndex + len(args.Entries)
+		rf.nextIndex[peerIndex] = rf.matchIndex[peerIndex] - 1
+	//	根据当前的match情况更新leader的commitIndex
+		rf.updateCommitIndexForLeader()
+	} else {
+		//处理日志不一致的情况,这个先不管(2B)
+
+	}
+	rf.mu.Unlock()
+	return isContinue
+}
+
+//根据matchIndex[]的情况来更新commitIndex，并通知doCommit，进行applymsg发送
+func (rf *Raft) updateCommitIndexForLeader() {
+	//从commitIndex开始往到最后一个，全部查询一次,判断每个index是否已经在match中，只要小就可以了
+	lastCommitIndex := -1
+	for i := rf.commitIndex + 1; i < len(rf.log); i++ {
+		count := 0
+		for _, matchIndex := range rf.matchIndex {
+			if i <= matchIndex {
+				count += 1
+			}
 		}
-		go func(i int) {
-			reply := &AppendEntriesReply{}
-			ok := rf.sendAppendEntries(i, args, reply)
-			if !ok {
-				return
+		//半数条件 加上 是自己任期的term
+		if count > len(rf.peers) / 2 && rf.log[i].Term == rf.currentTerm {
+			lastCommitIndex = i
+		}
+	}
+	if lastCommitIndex > rf.commitIndex {
+		rf.commitIndex = lastCommitIndex
+		rf.applyCond.Signal()
+	}
+}
+// 将已经可以commit的信息进行commit操作，在这个实验中commit操作就是发送ApplyMsg信息
+func (rf *Raft) doCommit() {
+	for {
+		//等待事件发生
+		rf.mu.Lock()
+		for rf.commitIndex <= rf.lastApplied {
+			rf.applyCond.Wait()
+		}
+		//针对可以commited进行发生applyMsg
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: rf.log[i].Index,
 			}
-			//收到一个新leader的响应
-
-			if reply.Term > rf.currentTerm {
-				rf.state = FOLLOWER
-				rf.voterFor = -1
-				rf.currentTerm = reply.Term
-				rf.refreshExpireTime()
-			}
-		}(i)
-
+			rf.applyCh <- applyMsg
+			rf.lastApplied = i
+		}
+		rf.mu.Unlock()
 	}
 }
