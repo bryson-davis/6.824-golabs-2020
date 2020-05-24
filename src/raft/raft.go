@@ -231,53 +231,71 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	//心跳处理
+
+	rf.refreshExpireTime()
 	rf.state = FOLLOWER
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.voterFor = -1
 	}
 
-	if len(args.Entries) == 0 {
-		//fmt.Printf("debug: hearbeat from server-%d, server-%d %s->FOLLOWER\n", args.LeaderId, rf.me, rf.state)
-		rf.refreshExpireTime()
-		reply.Term = rf.currentTerm //设置完自己的再返回
-		reply.Success = true
-		return
+	//if len(args.Entries) == 0 {
+	//	//fmt.Printf("debug: hearbeat from server-%d, server-%d %s->FOLLOWER\n", args.LeaderId, rf.me, rf.state)
+	//	reply.Term = rf.currentTerm //设置完自己的再返回
+	//	reply.Success = true
+	//	return
+	//}
+
+
+	//日志一致性检查
+	//DPrintf("server-%d log: %v", rf.me, rf.log)
+	//prevLogTerm := rf.log[len(rf.log)-1].Term
+	//prevLogIndex := len(rf.log) - 1
+	//DPrintf("leader-%d to server-%d, args: %v; prevLogTerm: %d, prevLogIndex: %d", args.LeaderId, rf.me, args, prevLogTerm, prevLogIndex)
+	//////日志不存在，当前节点比较短
+	//if args.PrevLogTerm > prevLogIndex {
+	//	reply.Term = rf.currentTerm
+	//	reply.Success = false
+	//	fmt.Printf("debug: server-%d logIndex dis match\n", rf.me)
+	//	return
+	//}
+	////日志存在但不匹配，当前节点比较长或者同长，但是内容不同
+	//if args.PrevLogIndex != prevLogIndex || args.PrevLogTerm != prevLogTerm {
+	//	DPrintf("debug: dismatch handler, args.PrevLogIndex: %d, prevLogIndex %d ; args.PrevLogTerm %d, prevLogTerm %d", args.PrevLogIndex, prevLogIndex, args.PrevLogTerm, prevLogTerm)
+	//	rf.log = rf.log[:args.PrevLogIndex] //删除不同的及后续所有
+	//
+	//	reply.Term = rf.currentTerm
+	//	reply.Success = false
+	//	fmt.Printf("debug: server-%d logIndex dis match\n", rf.me)
+	//	return
+	//}
+
+	//添加新的,如果已经存在的，直接pass
+	DPrintf("leader-%d to server-%d, args: %v", args.LeaderId, rf.me, args)
+	for _, entry := range args.Entries {
+		localEntry, existed := rf.GetLogAtIndex(entry.Index)
+		if existed {
+			if entry.Term != localEntry.Term {
+				DPrintf("conflict term")
+				break
+			}
+		} else {
+			rf.log = append(rf.log, entry)
+		}
 	}
-
-
-	//检验日志是否匹配
-	preLogTerm := rf.log[len(rf.log)-1].Term
-	preLogIndex := len(rf.log) - 1
-	DPrintf("leader-%d to server-%d, args: %v; preLogTerm: %d, preLogIndex: %d", args.LeaderId, rf.me, args, preLogTerm, preLogIndex)
-	//日志不存在，当前节点比较短
-	if args.PrevLogTerm > preLogIndex {
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		fmt.Printf("debug: server-%d logIndex dis match\n", rf.me)
-		return
-	}
-	//日志存在但不匹配，当前节点比较长或者同长，但是内容不同
-	if args.PrevLogIndex != preLogIndex || args.PrevLogTerm != preLogTerm {
-		rf.log = rf.log[:args.PrevLogIndex] //删除不同的及后续所有
-
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		fmt.Printf("debug: server-%d logIndex dis match", rf.me)
-		return
-	}
-
-	//添加新的
-	rf.log = append(rf.log, args.Entries...)
+	//rf.log = append(rf.log, args.Entries...)
 	if args.LeaderCommit > rf.commitIndex {
 		//取最小值的原因在于可能是leader发现这个follower缺少日志，往前找的log信息
 		if args.LeaderCommit < len(rf.log) - 1 {
 			rf.commitIndex = args.LeaderCommit
 		} else {
-			rf.commitIndex = args.LeaderCommit
+			rf.commitIndex = len(rf.log)-1
 		}
-		rf.applyCond.Broadcast() //通知进行提交
+		DPrintf("debug: server-%d commitIndex: %d", rf.me, rf.commitIndex)
+		rf.applyCond.Signal() //通知进行提交
 	}
+	reply.Term = rf.currentTerm
+	reply.Success = true
 
 }
 //
@@ -343,6 +361,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader == false {
 		return index, term, isLeader
 	}
+	fmt.Printf("leader-%d send common %v\n", rf.me, command)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -541,7 +560,7 @@ func (rf *Raft) requestAppendEntries(peerIndex int, isHeartbeat bool) {
 	//获取需要发送的log
 	rf.mu.Lock()
 	var entries []LogEntry
-	DPrintf("rf.nextIndex[%d]=%d", peerIndex, rf.nextIndex[peerIndex])
+	//DPrintf("rf.nextIndex: %v", rf.nextIndex)
 	entries = rf.log[rf.nextIndex[peerIndex]:]
 	//封装请求体
 	args := &AppendEntriesArgs{
@@ -564,6 +583,9 @@ func (rf *Raft) requestAppendEntries(peerIndex int, isHeartbeat bool) {
 		DPrintf("rpc failed")
 		return
 	}
+	//if isHeartbeat == false {
+	//	DPrintf("no heartbeat, reply: %v", reply)
+	//}
 	if rf.handleAppendEntriesReply(peerIndex, args, reply) {
 		DPrintf("debug: retry again")
 		go rf.requestAppendEntries(peerIndex, isHeartbeat)
@@ -585,7 +607,7 @@ func (rf *Raft) handleAppendEntriesReply(peerIndex int, args *AppendEntriesArgs,
 	//处理成功的情况
 	if reply.Success {
 		rf.matchIndex[peerIndex] = args.PrevLogIndex + len(args.Entries)
-		rf.nextIndex[peerIndex] = rf.matchIndex[peerIndex] - 1
+		rf.nextIndex[peerIndex] = rf.matchIndex[peerIndex] + 1
 	//	根据当前的match情况更新leader的commitIndex
 		rf.updateCommitIndexForLeader()
 	} else {
@@ -600,6 +622,7 @@ func (rf *Raft) handleAppendEntriesReply(peerIndex int, args *AppendEntriesArgs,
 func (rf *Raft) updateCommitIndexForLeader() {
 	//从commitIndex开始往到最后一个，全部查询一次,判断每个index是否已经在match中，只要小就可以了
 	lastCommitIndex := -1
+	//DPrintf("updateCommitIndex: %v, %v", rf.commitIndex, rf.matchIndex)
 	for i := rf.commitIndex + 1; i < len(rf.log); i++ {
 		count := 0
 		for _, matchIndex := range rf.matchIndex {
@@ -614,6 +637,7 @@ func (rf *Raft) updateCommitIndexForLeader() {
 	}
 	if lastCommitIndex > rf.commitIndex {
 		rf.commitIndex = lastCommitIndex
+		DPrintf("rf.commitIndex change: %d", rf.commitIndex)
 		rf.applyCond.Signal()
 	}
 }
@@ -632,9 +656,20 @@ func (rf *Raft) doCommit() {
 				Command:      rf.log[i].Command,
 				CommandIndex: rf.log[i].Index,
 			}
+			DPrintf("server-%d log: %v", rf.me, rf.log)
+			DPrintf("server-%d do commit, applyMsg: %v", rf.me, applyMsg)
 			rf.applyCh <- applyMsg
 			rf.lastApplied = i
 		}
 		rf.mu.Unlock()
+	}
+}
+
+//下标 还是以LogEntries里面的下标为准
+func (rf *Raft) GetLogAtIndex(index int) (*LogEntry, bool) {
+	if index > rf.log[len(rf.log)-1].Index {
+		return nil, false
+	} else {
+		return &rf.log[index], true
 	}
 }
