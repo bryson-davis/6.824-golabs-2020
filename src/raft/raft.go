@@ -231,6 +231,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	//心跳处理
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	rf.refreshExpireTime()
 	rf.state = FOLLOWER
@@ -238,14 +240,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.voterFor = -1
 	}
-
-	//if len(args.Entries) == 0 {
-	//	//fmt.Printf("debug: hearbeat from server-%d, server-%d %s->FOLLOWER\n", args.LeaderId, rf.me, rf.state)
-	//	reply.Term = rf.currentTerm //设置完自己的再返回
-	//	reply.Success = true
-	//	return
-	//}
-
 
 	//日志一致性检查
 	//DPrintf("server-%d log: %v", rf.me, rf.log)
@@ -270,19 +264,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//	return
 	//}
 
-	//添加新的,如果已经存在的，直接pass
+	//添加新的,如果已经存在的，直接pass,如果冲突的话，先删除再添加新的
 	DPrintf("leader-%d to server-%d, args: %v", args.LeaderId, rf.me, args)
-	for _, entry := range args.Entries {
+	isConflict := false
+	conflictIndex := -1
+	cur := -1
+	var entry LogEntry
+	for cur = 0; cur < len(args.Entries); cur++ {
+		entry = args.Entries[cur]
 		localEntry, existed := rf.GetLogAtIndex(entry.Index)
 		if existed {
 			if entry.Term != localEntry.Term {
 				DPrintf("conflict term")
+				isConflict = true
+				conflictIndex = localEntry.Index
 				break
 			}
 		} else {
 			rf.log = append(rf.log, entry)
 		}
 	}
+	if isConflict {
+		rf.log = rf.log[:conflictIndex]
+		rf.log = append(rf.log, args.Entries[cur:]...)
+	}
+
 	//rf.log = append(rf.log, args.Entries...)
 	if args.LeaderCommit > rf.commitIndex {
 		//取最小值的原因在于可能是leader发现这个follower缺少日志，往前找的log信息
@@ -361,7 +367,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader == false {
 		return index, term, isLeader
 	}
-	fmt.Printf("leader-%d send common %v\n", rf.me, command)
+	fmt.Printf("leader-%d send common %v, term is %d\n", rf.me, command, rf.currentTerm)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -517,7 +523,7 @@ func (rf *Raft) requestVote() {
 			ok := rf.sendRequestVote(i, args, reply)
 			//网络不通
 			if !ok {
-				fmt.Println("rpc failed")
+				//fmt.Println("rpc failed")
 				return
 			}
 			rf.mu.Lock()
@@ -580,7 +586,7 @@ func (rf *Raft) requestAppendEntries(peerIndex int, isHeartbeat bool) {
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(peerIndex, args, reply)
 	if !ok {
-		DPrintf("rpc failed")
+		//DPrintf("rpc failed")
 		return
 	}
 	//if isHeartbeat == false {
@@ -624,7 +630,7 @@ func (rf *Raft) updateCommitIndexForLeader() {
 	lastCommitIndex := -1
 	//DPrintf("updateCommitIndex: %v, %v", rf.commitIndex, rf.matchIndex)
 	for i := rf.commitIndex + 1; i < len(rf.log); i++ {
-		count := 0
+		count := 1  //需要先加上leader本身的一个
 		for _, matchIndex := range rf.matchIndex {
 			if i <= matchIndex {
 				count += 1
