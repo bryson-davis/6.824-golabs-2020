@@ -203,7 +203,7 @@ func (cfg *config) start1(i int) {
 		}
 	}()
 
-	fmt.Println("debug: config Make raft")
+	//fmt.Println("debug: config Make raft")
 	rf := Make(ends, i, cfg.saved[i], applyCh)
 
 	cfg.mu.Lock()
@@ -447,7 +447,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
 				if ok {
-					fmt.Printf("send start to leader-%d\n", starts)
+					//fmt.Printf("send start to leader-%d\n", starts)
 					index = index1
 					break
 				}
