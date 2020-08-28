@@ -264,6 +264,7 @@ func (rf* Raft) electionTimer() {
 		time.Sleep(time.Millisecond * time.Duration(interval))
 		role := rf.Role()
 		if role == FOLLOWER {
+			// 使用LastHeartBeatReceived可以避免使用定时器，提高程序的可读性
 			diff := time.Since(rf.LastHeartBeatReceived())
 			if diff < time.Duration(interval) * time.Millisecond {
 				continue
