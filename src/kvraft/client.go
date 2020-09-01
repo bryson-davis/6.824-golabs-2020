@@ -1,13 +1,18 @@
 package kvraft
 
-import "labrpc"
+import (
+	"labrpc"
+	"time"
+)
 import "crypto/rand"
 import "math/big"
 
+var retryTime = 100 * time.Millisecond
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	leaderID int
 }
 
 func nrand() int64 {
@@ -21,12 +26,17 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.leaderID = 0
 	return ck
 }
 
+func (ck *Clerk) Call(svcMeth string, args interface{}, reply interface{}) bool {
+	return ck.servers[ck.leaderID].Call(svcMeth, args, reply)
+}
+
 //
-// fetch the current value for a key.
-// returns "" if the key does not exist.
+// fetch the current Value for a Key.
+// returns "" if the Key does not exist.
 // keeps trying forever in the face of all other errors.
 //
 // you can send an RPC with code like this:
@@ -37,9 +47,19 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
+	args := GetArgs{Key:key}
+	reply := GetReply{}
 	// You will have to modify this function.
-	return ""
+	for {
+		// 成功获取
+		if ck.Call("KVServer.Get", &args, &reply) && reply.Err == OK {
+			DPrintf("Get %s success, Value is %s", key, reply.Value)
+			return reply.Value
+		}
+		// 失败更新
+		ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+		time.Sleep(retryTime)
+	}
 }
 
 //
@@ -54,6 +74,21 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	args := PutAppendArgs{
+		Key:   key,
+		Value: value,
+		Op:    op,
+	}
+	reply := PutAppendReply{}
+	for {
+		// 成功
+		if ck.Call("KVServer.PutAppend", &args, &reply) && reply.Err == OK {
+			DPrintf("OP: %s, Key: %s, Value: %s success", op, key, value)
+			return
+		}
+		ck.leaderID = (ck.leaderID + 1) % len(ck.servers)
+		time.Sleep(retryTime)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

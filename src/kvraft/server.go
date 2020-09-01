@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"fmt"
 	"labgob"
 	"labrpc"
 	"log"
@@ -23,6 +24,15 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Action string
+	Key    string
+	Value  string
+}
+
+// 用于接收到raft的提交信号之后进行封装并提交给rpc处理函数进行处理
+type NotifyMsg struct {
+	err Err
+	value string
 }
 
 type KVServer struct {
@@ -31,19 +41,83 @@ type KVServer struct {
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
+	kvStore map[string]string
 
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	notifyChanMap map[int]chan NotifyMsg
 }
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := Op{
+		Action: "Get",
+		Key:    args.Key,
+	}
+	reply.Err, reply.Value = kv.DoAction(op)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{
+		Action: args.Op,
+		Key:    args.Key,
+		Value:  args.Value,
+	}
+	reply.Err, _ = kv.DoAction(op)
+}
+
+func (kv *KVServer) DoAction(args interface{}) (Err, string) {
+	// 调用kv.raft的start，并等待结果
+	index, _, isLeader := kv.rf.Start(args)
+	if !isLeader {
+		return ErrWrongLeader, ""
+	}
+	// 配置通知通道
+	kv.mu.Lock()
+	notifyCh := make(chan NotifyMsg)
+	kv.notifyChanMap[index] = notifyCh
+	kv.mu.Unlock()
+
+	// 等待通知信号
+	select {
+	case msg := <-notifyCh:
+		//if msg.term != term {
+		//	return ErrWrongLeader,  ""
+		//}
+		return msg.err, msg.value
+	}
+}
+
+// 启动kvServer，等待commit信号
+func (kv *KVServer) run() {
+	for {
+		select {
+		case msg := <-kv.applyCh:
+			fmt.Println("msg: ", msg)
+			kv.apply(&msg)
+		}
+	}
+}
+
+// 接收到commit信号之后进行apply到kvstore,并通知到相应的通道
+func (kv *KVServer) apply(msg *raft.ApplyMsg) {
+	notifyMsg := NotifyMsg{}
+	op := msg.Command.(Op)
+	if op.Action == "Get" {
+		notifyMsg.value = kv.kvStore[op.Key]
+	} else if op.Action == "Put" {
+		kv.kvStore[op.Key] = op.Value
+	} else {
+		kv.kvStore[op.Key] = kv.kvStore[op.Key] + op.Value
+	}
+	// 进行通道通知
+	index := msg.CommandIndex
+	notifyCh := kv.notifyChanMap[index]
+	delete(kv.notifyChanMap, index)
+	notifyCh <- notifyMsg
 }
 
 //
@@ -70,7 +144,7 @@ func (kv *KVServer) killed() bool {
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
-// form the fault-tolerant key/value service.
+// form the fault-tolerant Key/Value service.
 // me is the index of the current server in servers[].
 // the k/v server should store snapshots through the underlying Raft
 // implementation, which should call persister.SaveStateAndSnapshot() to
@@ -97,5 +171,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
+	kv.notifyChanMap = make(map[int]chan NotifyMsg, 0)
+	kv.kvStore = make(map[string]string, 0)
+	go kv.run()
 	return kv
 }
+
+
