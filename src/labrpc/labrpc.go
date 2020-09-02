@@ -50,7 +50,9 @@ package labrpc
 //
 
 //import "../labgob"
-import "labgob"
+import (
+	"labgob"
+)
 import "bytes"
 import "reflect"
 import "sync"

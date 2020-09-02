@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	"fmt"
 	"labgob"
 	"labrpc"
 	"log"
@@ -25,6 +24,8 @@ type Op struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	Action string
+	Seq  int
+	ClerkID int64
 	Key    string
 	Value  string
 }
@@ -35,6 +36,7 @@ type NotifyMsg struct {
 	value string
 }
 
+
 type KVServer struct {
 	mu      sync.Mutex
 	me      int
@@ -42,6 +44,7 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 	kvStore map[string]string
+	clientCurSeqMap map[int64]int
 
 	maxraftstate int // snapshot if log grows this big
 
@@ -63,8 +66,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{
 		Action: args.Op,
+		Seq: args.Seq,
 		Key:    args.Key,
 		Value:  args.Value,
+		ClerkID: args.ClerkID,
 	}
 	reply.Err, _ = kv.DoAction(op)
 }
@@ -96,7 +101,6 @@ func (kv *KVServer) run() {
 	for {
 		select {
 		case msg := <-kv.applyCh:
-			fmt.Println("msg: ", msg)
 			kv.apply(&msg)
 		}
 	}
@@ -104,15 +108,27 @@ func (kv *KVServer) run() {
 
 // 接收到commit信号之后进行apply到kvstore,并通知到相应的通道
 func (kv *KVServer) apply(msg *raft.ApplyMsg) {
-	notifyMsg := NotifyMsg{}
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	notifyMsg := NotifyMsg{err:OK}
 	op := msg.Command.(Op)
 	if op.Action == "Get" {
 		notifyMsg.value = kv.kvStore[op.Key]
-	} else if op.Action == "Put" {
-		kv.kvStore[op.Key] = op.Value
+	} else if kv.clientCurSeqMap[op.ClerkID] < op.Seq {
+		log.Println("clerkID: ", op.ClerkID)
+		log.Println("map: ", kv.clientCurSeqMap[op.ClerkID])
+		log.Println("seq: ", op.Seq)
+		if op.Action == "Put" {
+			kv.kvStore[op.Key] = op.Value
+		} else {
+			kv.kvStore[op.Key] = kv.kvStore[op.Key] + op.Value
+		}
+		kv.clientCurSeqMap[op.ClerkID] = op.Seq
 	} else {
-		kv.kvStore[op.Key] = kv.kvStore[op.Key] + op.Value
+		log.Println("has been apply request")
 	}
+	notifyMsg.value = kv.kvStore[op.Key]
+
 	// 进行通道通知
 	index := msg.CommandIndex
 	notifyCh := kv.notifyChanMap[index]
@@ -173,6 +189,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.notifyChanMap = make(map[int]chan NotifyMsg, 0)
 	kv.kvStore = make(map[string]string, 0)
+	kv.clientCurSeqMap = make(map[int64]int, 0)
 	go kv.run()
 	return kv
 }

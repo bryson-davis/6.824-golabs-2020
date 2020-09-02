@@ -1,12 +1,14 @@
 package kvraft
 
-import "porcupine"
+import (
+	"log"
+	"porcupine"
+)
 import "models"
 import "testing"
 import "strconv"
 import "time"
 import "math/rand"
-import "log"
 import "strings"
 import "sync"
 import "sync/atomic"
@@ -23,20 +25,17 @@ const linearizabilityCheckTimeout = 1 * time.Second
 func Get(cfg *config, ck *Clerk, key string) string {
 	v := ck.Get(key)
 	cfg.op()
-	fmt.Println("Get one")
 	return v
 }
 
 func Put(cfg *config, ck *Clerk, key string, value string) {
 	ck.Put(key, value)
 	cfg.op()
-	fmt.Println("Put one")
 }
 
 func Append(cfg *config, ck *Clerk, key string, value string) {
 	ck.Append(key, value)
 	cfg.op()
-	fmt.Println("Append one")
 }
 
 func check(cfg *config, t *testing.T, ck *Clerk, key string, value string) {
@@ -458,6 +457,8 @@ func TestConcurrent3A(t *testing.T) {
 	GenericTest(t, "3A", 5, false, false, false, -1)
 }
 
+
+// 用于测试网络不稳定，也就是响应超时的情况（比如响应丢包）
 func TestUnreliable3A(t *testing.T) {
 	// Test: unreliable net, many clients (3A) ...
 	GenericTest(t, "3A", 5, true, false, false, -1)

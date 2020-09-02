@@ -1,7 +1,9 @@
 package kvraft
 
 import (
+	"fmt"
 	"labrpc"
+	"sync"
 	"time"
 )
 import "crypto/rand"
@@ -13,6 +15,9 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
 	leaderID int
+	seq int //全局唯一序列号
+	mu sync.Mutex
+	clerkID int64 //客户端ID，用于kvserver标记序列号的
 }
 
 func nrand() int64 {
@@ -27,6 +32,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	// You'll have to add code here.
 	ck.leaderID = 0
+	ck.clerkID = nrand()
+	fmt.Println("ID: ", ck.clerkID)
 	return ck
 }
 
@@ -74,10 +81,15 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	ck.mu.Lock()
+	ck.seq = ck.seq + 1
+	ck.mu.Unlock()
 	args := PutAppendArgs{
 		Key:   key,
 		Value: value,
 		Op:    op,
+		Seq: ck.seq,
+		ClerkID: ck.clerkID,
 	}
 	reply := PutAppendReply{}
 	for {
